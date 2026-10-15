@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import os
 import re
+import subprocess
 from urllib import error, request
 
 from devvideo.evidence import VISIBLE_SINGLE, Evidence, display_rows, has_table, usage_rank
@@ -52,6 +53,7 @@ class Storyboard:
     beats: list[Beat]
     generator: str
     llm_error: str | None = None
+    review_attempts: int = 1
 
     def to_dict(self) -> dict:
         payload = asdict(self)
@@ -73,32 +75,23 @@ def generate_script(
     *,
     llm: str = "auto",
     max_seconds: float = 58.0,
+    feedback: list[str] | None = None,
 ) -> Storyboard:
+    """One scriptwriter draft. The reviewer decides whether a second draft is needed."""
     if not cards:
         raise ScriptError(["no evidence was retrieved from the repository"])
-    by_id = {card.id: card for card in cards}
-    mode = llm
-    config = resolve_llm() if llm in {"auto", "on"} else None
-    llm_error = None
-    if llm == "on" and config is None:
+    if llm == "off":
+        return compose_grounded(cards, repo_name, max_seconds=max_seconds)
+    if os.environ.get("CLAUDE_KEY", "").strip():
+        return draft_from_claude(cards, repo_name, feedback=feedback, max_seconds=max_seconds)
+    config = resolve_llm()
+    if config is not None:
+        return draft_from_chat(cards, repo_name, config, feedback=feedback, max_seconds=max_seconds)
+    if llm == "on":
         raise ScriptError(
-            ["--llm on requires DEVVIDEO_LLM_API_KEY or OPENAI_API_KEY, or a running Ollama server"]
+            ["--llm on requires CLAUDE_KEY for claude -p, or DEVVIDEO_LLM_API_KEY / OPENAI_API_KEY, or a running Ollama server"]
         )
-    if config is not None and mode in {"auto", "on"}:
-        try:
-            board = _from_llm(cards, repo_name, config, by_id, max_seconds)
-            board.generator = f"llm:{config.model}"
-            return board
-        except ScriptError as exc:
-            if mode == "on":
-                raise
-            llm_error = str(exc)
-    board = compose_grounded(cards, repo_name, max_seconds=max_seconds)
-    board.llm_error = llm_error
-    errors = validate_storyboard(board, by_id, max_seconds=max_seconds)
-    if errors:
-        raise ScriptError(errors)
-    return board
+    return compose_grounded(cards, repo_name, max_seconds=max_seconds)
 
 
 def compose_grounded(cards: list[Evidence], repo_name: str, max_seconds: float = 58.0) -> Storyboard:
@@ -217,30 +210,94 @@ def _ollama_config() -> LlmConfig | None:
     return LlmConfig(base_url="http://127.0.0.1:11434/v1", api_key="ollama", model=name)
 
 
-def _from_llm(
+def draft_from_claude(
+    cards: list[Evidence],
+    repo_name: str,
+    *,
+    feedback: list[str] | None = None,
+    max_seconds: float = 58.0,
+    runner=None,
+) -> Storyboard:
+    key = os.environ.get("CLAUDE_KEY", "").strip()
+    if not key:
+        raise ScriptError(["CLAUDE_KEY is not set"])
+    raw = complete_claude(SYSTEM, _prompt_with_feedback(cards, repo_name, feedback), key, runner=runner)
+    return _board_from_model_text(raw, repo_name, "claude", max_seconds)
+
+
+def draft_from_chat(
     cards: list[Evidence],
     repo_name: str,
     config: LlmConfig,
-    by_id: dict[str, Evidence],
-    max_seconds: float,
+    *,
+    feedback: list[str] | None = None,
+    max_seconds: float = 58.0,
 ) -> Storyboard:
+    raw = complete_chat(config, SYSTEM, _prompt_with_feedback(cards, repo_name, feedback))
+    return _board_from_model_text(raw, repo_name, f"llm:{config.model}", max_seconds)
+
+
+def _prompt_with_feedback(cards: list[Evidence], repo_name: str, feedback: list[str] | None) -> str:
     prompt = _prompt(cards, repo_name)
-    last_errors: list[str] = []
-    for _ in range(2):
-        feedback = ""
-        if last_errors:
-            feedback = "\nFix these errors and return JSON only:\n- " + "\n- ".join(last_errors)
-        raw = complete_chat(config, SYSTEM, prompt + feedback)
-        try:
-            board = _parse_board(raw, repo_name)
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            last_errors = [f"invalid JSON ({exc})"]
-            continue
-        _assign_durations(board.beats, max_seconds)
-        last_errors = validate_storyboard(board, by_id, max_seconds=max_seconds)
-        if not last_errors:
-            return board
-    raise ScriptError(last_errors or ["LLM did not return a storyboard"])
+    if feedback:
+        prompt += "\nFix these errors and return JSON only:\n- " + "\n- ".join(feedback)
+    return prompt
+
+
+def _board_from_model_text(raw: str, repo_name: str, generator: str, max_seconds: float) -> Storyboard:
+    try:
+        board = _parse_board(raw, repo_name)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise ScriptError([f"invalid JSON ({exc})"]) from exc
+    _assign_durations(board.beats, max_seconds)
+    board.generator = generator
+    return board
+
+
+def complete_claude(system: str, user: str, key: str, runner=None) -> str:
+    """Ask claude -p for one draft. CLAUDE_KEY is a Claude login token, not an API key."""
+    if runner is None:
+        runner = subprocess.run
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = key
+    try:
+        completed = runner(
+            [
+                "claude",
+                "-p",
+                "--output-format",
+                "text",
+                "--tools",
+                "",
+                "--no-session-persistence",
+                "--disable-slash-commands",
+                "--system-prompt",
+                system,
+            ],
+            input=user,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=180,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise ScriptError(["claude is not installed"]) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ScriptError(["claude -p timed out"]) from exc
+    stdout = getattr(completed, "stdout", "") or ""
+    stderr = getattr(completed, "stderr", "") or ""
+    if getattr(completed, "returncode", 1) != 0:
+        detail = stderr.strip() or stdout.strip() or "claude -p failed"
+        raise ScriptError([_redact(detail[:400], key)])
+    if not stdout.strip():
+        raise ScriptError(["claude -p returned an empty reply"])
+    return stdout
+
+
+def _redact(text: str, key: str) -> str:
+    return text.replace(key, "[redacted]") if key else text
 
 
 def complete_chat(config: LlmConfig, system: str, user: str) -> str:

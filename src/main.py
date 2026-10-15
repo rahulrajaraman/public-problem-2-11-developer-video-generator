@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         "--llm",
         choices=("auto", "on", "off"),
         default="auto",
-        help="auto uses an LLM when DEVVIDEO_LLM_API_KEY, OPENAI_API_KEY, or Ollama is available",
+        help="auto uses claude -p when CLAUDE_KEY is set, else an OpenAI-compatible chat model or Ollama; off uses the grounded composer",
     )
     parser.add_argument(
         "--tts",

@@ -2,15 +2,18 @@
 
 A one-minute developer video from a GitHub repository. The video explains the problem the repo addresses, the functions a caller uses, how a call moves through the code, and the results the repo actually reports. Every code block and quote on screen is a retrieved slice of that repo.
 
-## Pipeline
+## Workflow
 
-1. **Checkout.** `--repo` accepts `https://github.com/owner/name`, `owner/name`, or a local directory. GitHub inputs are shallow-cloned. The repo is never executed.
-2. **Retrieve.** README, `docs/`, and `benchmarks/` are split into sections, fenced examples, and notes. Public Python functions and classes become signature cards (name, docstring, public methods) with file and line numbers. Cards are ranked toward problem statements, usage, exported APIs, and benchmark tables, then kept as a small evidence pack (`evidence.json`).
-3. **Script.** Five beats, in order: title, problem, APIs, how to use it, results. An OpenAI-compatible chat model writes the narration when `DEVVIDEO_LLM_API_KEY` or `OPENAI_API_KEY` is set, or when Ollama is running. The model may only cite evidence ids. A validator rejects unknown ids and any number or percentage that does not appear verbatim in the cited cards, and retries once. Without a model, a grounded composer writes the same shape from those cards. Either way, durations are fit under 60 seconds. `narration.txt` is the timed read-aloud script.
-4. **Speech.** edge-tts (en-US-GuyNeural, or `DEVVIDEO_TTS_VOICE`) reads each beat. Paths and units are softened for speech (`engine.py` becomes "engine dot py", `ms` becomes "milliseconds"). The clip is padded to the beat length, so the line starts with the frame and the rest of the beat is quiet for reading the evidence. `--tts auto` keeps the silent video if the service cannot be reached. `--tts off` skips this step.
-5. **Render.** Each beat is a frame: spoken line on top, a **RETRIEVED** panel underneath that copies the cited file lines. API beats stack the retrieved signatures. ffmpeg muxes the speech track into `developer-video.mp4`.
+Four roles pass files to each other. The producer does not start until the reviewer accepts the script.
 
-The picture does not trust the narration for code. The panel is drawn from the evidence rows, so a model cannot invent a function body onto the screen.
+1. **Retriever.** `--repo` accepts `https://github.com/owner/name`, `owner/name`, or a local directory. GitHub inputs are shallow-cloned. The repo is never executed. README, docs, benchmarks, fenced examples, and public Python signatures become evidence cards with file and line numbers. The pack is `evidence.json`.
+2. **Scriptwriter.** Reads that pack and drafts five beats: title, problem, APIs, how to use it, results. If `CLAUDE_KEY` is set, the draft comes from `claude -p`. That variable is a Claude login token (`CLAUDE_CODE_OAUTH_TOKEN`), not an Anthropic API key. Otherwise an OpenAI-compatible chat model or Ollama is used when configured. `--llm off` skips both and fills the beats from the evidence cards directly.
+3. **Reviewer.** Accepts the draft, or sends the problems back to the scriptwriter for one revision. A beat must cite evidence ids from the pack. A number or percentage in the headline or narration must appear in those cards. The video stays under 60 seconds. With `--llm auto`, a second rejection falls back to the evidence-backed draft.
+4. **Producer.** Reads the accepted storyboard aloud with edge-tts, draws each beat, and muxes `developer-video.mp4`. The on-screen code is copied from the evidence rows.
+
+`narration.txt` is the timed read-aloud script. `script.json` records which generator wrote the draft and how many review attempts it took.
+
+Speech uses en-US-GuyNeural, or `DEVVIDEO_TTS_VOICE`. Paths and units are softened (`engine.py` becomes "engine dot py", `ms` becomes "milliseconds"). `--tts auto` keeps a silent video if the speech service cannot be reached. `--tts off` skips speech.
 
 ## Run
 
@@ -22,7 +25,7 @@ python src/main.py --repo examples/frame_index --out artifacts/frame_index --llm
 
 `examples/frame_index` is a tiny video-retrieval stand-in so the pipeline runs without network. Point `--repo` at a real video-understanding or retrieval checkout for a full video. ffmpeg is required.
 
-Set `DEVVIDEO_LLM_BASE_URL` and `DEVVIDEO_LLM_MODEL` for a non-OpenAI endpoint. `--llm on` fails closed if no endpoint is configured. `--llm auto` falls back to the grounded composer.
+Set `CLAUDE_KEY` to draft with `claude -p`. Set `DEVVIDEO_LLM_BASE_URL` and `DEVVIDEO_LLM_MODEL` for a non-OpenAI chat endpoint. `--llm on` stops if neither Claude nor a chat endpoint is available. `--llm auto` falls back to the evidence-backed draft. `--llm off` does not call a model.
 
 ## Limits
 

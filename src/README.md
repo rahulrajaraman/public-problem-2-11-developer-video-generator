@@ -1,3 +1,3 @@
 Developer video pipeline. Entry point: `python src/main.py --repo <github-url-or-path>`.
 
-`devvideo.clone` checks out the repo, `devvideo.evidence` retrieves README and API cards, `devvideo.script` writes a five-beat cited script, `devvideo.tts` reads that script aloud, and `devvideo.render` draws the cards and muxes the speech into the mp4.
+Four roles in `devvideo.roles`: the retriever writes `evidence.json`, the scriptwriter drafts a storyboard (`claude -p` when `CLAUDE_KEY` is set), the reviewer accepts or sends it back once, and the producer renders speech and `developer-video.mp4` only after acceptance.

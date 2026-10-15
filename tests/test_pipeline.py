@@ -16,7 +16,8 @@ sys.path.insert(0, str(ROOT / "src"))
 from devvideo.clone import CloneError, acquire, parse_github
 from devvideo.evidence import extract
 from devvideo.pipeline import run
-from devvideo.script import ScriptError, compose_grounded, validate_storyboard
+from devvideo.roles import agree_on_script
+from devvideo.script import ScriptError, complete_claude, compose_grounded, validate_storyboard
 from devvideo.tts import fit_to_duration, probe_duration, speakable
 
 
@@ -91,6 +92,71 @@ class ScriptTests(unittest.TestCase):
         board.beats[0].evidence_ids = ["E999"]
         errors = validate_storyboard(board, self.by_id)
         self.assertTrue(any("E999" in error for error in errors))
+
+    def test_reviewer_sends_one_revision_back_to_the_scriptwriter(self):
+        calls = []
+
+        def draft(feedback):
+            calls.append(feedback)
+            board = compose_grounded(self.cards, "frame_index")
+            board.generator = "claude"
+            if feedback is None:
+                board.beats[-1].narration = "The index reaches 99.9% recall@5 on the smoke set."
+            return board
+
+        board = agree_on_script(self.cards, "frame_index", llm="on", max_seconds=58, draft=draft)
+        self.assertEqual(len(calls), 2)
+        self.assertIsNone(calls[0])
+        self.assertTrue(any("99.9%" in item for item in calls[1]))
+        self.assertEqual(board.review_attempts, 2)
+        self.assertNotIn("99.9%", board.beats[-1].narration)
+
+    def test_required_model_stops_after_the_revision(self):
+        calls = []
+
+        def draft(feedback):
+            calls.append(feedback)
+            board = compose_grounded(self.cards, "frame_index")
+            board.generator = "claude"
+            board.beats[-1].narration = "The index reaches 99.9% recall@5 on the smoke set."
+            return board
+
+        with self.assertRaises(ScriptError):
+            agree_on_script(self.cards, "frame_index", llm="on", max_seconds=58, draft=draft)
+        self.assertEqual(len(calls), 2)
+
+    def test_claude_key_is_a_login_token_for_claude_print(self):
+        import os
+
+        seen = {}
+
+        def runner(args, **kwargs):
+            seen["args"] = args
+            seen["env"] = kwargs["env"]
+            seen["input"] = kwargs["input"]
+
+            class Completed:
+                returncode = 0
+                stdout = "{\"title\": \"ok\"}"
+                stderr = ""
+
+            return Completed()
+
+        previous = os.environ.get("ANTHROPIC_API_KEY")
+        os.environ["ANTHROPIC_API_KEY"] = "sk-should-not-be-forwarded"
+        try:
+            text = complete_claude("system", "user prompt", "login-token", runner=runner)
+        finally:
+            if previous is None:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+            else:
+                os.environ["ANTHROPIC_API_KEY"] = previous
+        self.assertIn("ok", text)
+        self.assertEqual(seen["args"][:2], ["claude", "-p"])
+        self.assertEqual(seen["env"]["CLAUDE_CODE_OAUTH_TOKEN"], "login-token")
+        self.assertNotIn("ANTHROPIC_API_KEY", seen["env"])
+        self.assertNotIn("login-token", seen["args"])
+        self.assertNotIn("login-token", seen["input"])
 
 
 class RenderTests(unittest.TestCase):
