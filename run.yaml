@@ -4,16 +4,11 @@
 
 setup_commands:
   - "pip install -r requirements.txt"
-  # - add every other setup step here, in order (env vars, downloads, etc.)
 
 run_commands:
-  - "python src/main.py --help"
-  # - the real command(s) that actually run your solution
+  - "python src/main.py --repo examples/frame_index --out artifacts/frame_index --llm off --tts auto"
 
-test_commands: []
-  # optional -- commands that run your own tests/checks, if you have any
+test_commands:
+  - "python -m unittest discover -s tests -v"
 
-notes: ""
-  # anything we should know before running this (e.g. "needs a GPU",
-  # "takes about 10 minutes", "expects a sample dataset already present
-  # under data/, see docs/ for where to get it")
+notes: "Requires ffmpeg, ffprobe, and git on PATH. The run command builds a video under one minute from examples/frame_index, with no API key. --tts auto reads narration.txt with the edge-tts neural voice en-US-GuyNeural when network is available, and still writes a silent video if that service cannot be reached. --tts off skips speech. Pass a GitHub URL to --repo to clone and generate from that repository. Set DEVVIDEO_LLM_API_KEY (optional DEVVIDEO_LLM_BASE_URL and DEVVIDEO_LLM_MODEL) to write narration with an LLM; without a key the grounded composer uses only retrieved evidence. The model may cite evidence ids only, and any number in the script must appear in those cards. DEVVIDEO_TTS_VOICE overrides the voice. Output is artifacts/<name>/developer-video.mp4 plus evidence.json, script.json, narration.txt, and audio/narration.wav when speech is generated."
